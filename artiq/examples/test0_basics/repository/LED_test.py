@@ -13,8 +13,8 @@ class LED_test(EnvExperiment):
     @kernel
     def run(self):
         self.core.reset()
-            delay(500*ms)
-            for index in range(1000):
+        delay(500*ms)
+        for index in range(1000):
             self.led.on()
             delay(500*ms)
             self.led.off()
