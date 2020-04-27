@@ -3,7 +3,7 @@ from artiq.experiment import *
 
 class TTL_onoff_all(EnvExperiment):
     """
-    Set all TTL channels to on/off
+    Set all TTL channels to on or off
     """
     def build(self):
         self.setattr_device("core")
