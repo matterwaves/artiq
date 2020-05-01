@@ -22,10 +22,8 @@ class TtlOn(EnvExperiment):
 
         self.core.reset()
         delay(1000*ms)
-        self.this_switch.on()
+        self.this_switch.on() # using the reference this_switch
         delay(500*ms)
 
         if self.off:
-            self.ttl6.off()
-
-        self.core.wait_until_mu(now_mu())
+            self.ttl6.off() # using the reference ttl6
