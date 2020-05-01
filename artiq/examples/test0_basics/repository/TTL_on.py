@@ -1,7 +1,7 @@
 from artiq.experiment import *
 
 
-class TTL_on(EnvExperiment):
+class TtlOn(EnvExperiment):
     """
     TTL on
     Test 1. whether the TTL channel value gets reset after the experiment exits

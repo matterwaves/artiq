@@ -1,7 +1,7 @@
 from artiq.experiment import *
 
 
-class DMA_test(EnvExperiment):
+class DmaTest(EnvExperiment):
     """
     DMA timing test
     Credit: m-labs.hk/artiq/manual/getting_started_core.html#direct-memory-access-dma
@@ -14,8 +14,6 @@ class DMA_test(EnvExperiment):
     @kernel
     def record(self):
         with self.dma.record("pulses"):
-            # all RTIO operations now go to the "pulses"
-            # DMA buffer, instead of being executed immediately.
             for i in range(50):
                 self.ttl.pulse(300*ns)
                 delay(300*ns)
@@ -30,6 +28,4 @@ class DMA_test(EnvExperiment):
         self.core.break_realtime()
         for _ in range(1000):
             # self.core.break_realtime()
-            # execute RTIO operations in the DMA buffer
-            # each playback advances the timeline by 50*(100+100) ns
             self.dma.playback_handle(pulses_handle)

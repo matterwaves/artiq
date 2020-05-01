@@ -1,7 +1,7 @@
 from artiq.experiment import *
 
 
-class LED_test(EnvExperiment):
+class LedTest(EnvExperiment):
     """
     LED test
     Credit: m-labs.hk/artiq/manual/getting_started_core.html#real-time-input-output-rtio

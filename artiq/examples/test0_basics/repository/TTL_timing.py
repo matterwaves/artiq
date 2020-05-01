@@ -4,7 +4,7 @@ from artiq.experiment import *
 def print_underflow(iter) -> TNone:
     print("RTIO underflow occured at iteration {}".format(iter))
 
-class TTL_timing(EnvExperiment):
+class TtlTiming(EnvExperiment):
     """
     TTL timing test
     Credit: m-labs.hk/artiq/manual/getting_started_core.html#real-time-input-output-rtio

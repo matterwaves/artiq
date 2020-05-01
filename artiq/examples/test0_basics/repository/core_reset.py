@@ -1,7 +1,7 @@
 from artiq.experiment import *
 
 
-class core_reset(EnvExperiment):
+class CoreReset(EnvExperiment):
     """
     Core reset
     Runs only the instruction core.reset()

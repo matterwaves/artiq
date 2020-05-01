@@ -1,7 +1,7 @@
 from artiq.experiment import *
 
 
-class TTL_onoff_all(EnvExperiment):
+class TtlOnOffAll(EnvExperiment):
     """
     Set all TTL channels to on or off
     """
