@@ -1,7 +1,7 @@
 from artiq.experiment import *
 
 
-class DDSSetMany(EnvExperiment):
+class DdsSetMany(EnvExperiment):
     """
     DDS test setting many frequencies
     Credit: github.com/m-labs/.../examples/kc705_nist_clock/repository/dds_test.py
