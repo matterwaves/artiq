@@ -20,6 +20,7 @@ from artiq.gateware.rtio.phy import ttl_simple, ttl_serdes_7series, edge_counter
 from artiq.gateware import eem
 from artiq.gateware.drtio.transceiver import gtp_7series
 from artiq.gateware.drtio.siphaser import SiPhaser7Series
+from artiq.gateware.drtio.wrpll import WRPLL, DDMTDSamplerGTP
 from artiq.gateware.drtio.rx_synchronizer import XilinxRXSynchronizer
 from artiq.gateware.drtio import *
 from artiq.build_soc import *
@@ -110,9 +111,10 @@ class StandaloneBase(MiniSoC, AMPSoC):
         AMPSoC.__init__(self)
         add_identifier(self)
 
-        self.submodules.leds = gpio.GPIOOut(Cat(
-            self.platform.request("user_led", 0)))
-        self.csr_devices.append("leds")
+        if self.platform.hw_rev == "v2.0":
+            self.submodules.error_led = gpio.GPIOOut(Cat(
+                self.platform.request("error_led")))
+            self.csr_devices.append("error_led")
 
         i2c = self.platform.request("i2c")
         self.submodules.i2c = gpio.GPIOTristate([i2c.scl, i2c.sda])
@@ -196,7 +198,7 @@ class SUServo(StandaloneBase):
     """
     def __init__(self, hw_rev=None, **kwargs):
         if hw_rev is None:
-            hw_rev = "v1.1"
+            hw_rev = "v2.0"
         StandaloneBase.__init__(self, hw_rev=hw_rev, **kwargs)
 
         self.config["SI5324_AS_SYNTHESIZER"] = None
@@ -305,9 +307,12 @@ class MasterBase(MiniSoC, AMPSoC):
         if enable_sata:
             drtio_data_pads.append(platform.request("sata"))
         drtio_data_pads += [platform.request("sfp", i) for i in range(1, 3)]
+        if self.platform.hw_rev == "v2.0":
+            drtio_data_pads.append(platform.request("sfp", 3))
 
-        sfp_ctls = [platform.request("sfp_ctl", i) for i in range(1, 3)]
-        self.comb += [sc.tx_disable.eq(0) for sc in sfp_ctls]
+        if self.platform.hw_rev in ("v1.0", "v1.1"):
+            sfp_ctls = [platform.request("sfp_ctl", i) for i in range(1, 3)]
+            self.comb += [sc.tx_disable.eq(0) for sc in sfp_ctls]
 
         self.submodules.drtio_transceiver = gtp_7series.GTP(
             qpll_channel=self.drtio_qpll_channel,
@@ -315,15 +320,19 @@ class MasterBase(MiniSoC, AMPSoC):
             sys_clk_freq=self.clk_freq,
             rtio_clk_freq=rtio_clk_freq)
         self.csr_devices.append("drtio_transceiver")
-        self.sync += self.disable_si5324_ibuf.eq(
+        self.sync += self.disable_cdr_clk_ibuf.eq(
             ~self.drtio_transceiver.stable_clkin.storage)
 
         if enable_sata:
             sfp_channels = self.drtio_transceiver.channels[1:]
         else:
             sfp_channels = self.drtio_transceiver.channels
-        self.comb += [sfp_ctl.led.eq(channel.rx_ready)
-            for sfp_ctl, channel in zip(sfp_ctls, sfp_channels)]
+        if self.platform.hw_rev in ("v1.0", "v1.1"):
+            self.comb += [sfp_ctl.led.eq(channel.rx_ready)
+                for sfp_ctl, channel in zip(sfp_ctls, sfp_channels)]
+        if self.platform.hw_rev == "v2.0":
+            self.comb += [self.virtual_leds.get(i + 1).eq(channel.rx_ready)
+                          for i, channel in enumerate(sfp_channels)]
 
         self.submodules.rtio_tsc = rtio.TSC("async", glbl_fine_ts_width=3)
 
@@ -407,14 +416,17 @@ class MasterBase(MiniSoC, AMPSoC):
     def create_qpll(self):
         # The GTP acts up if you send any glitch to its
         # clock input, even while the PLL is held in reset.
-        self.disable_si5324_ibuf = Signal(reset=1)
-        self.disable_si5324_ibuf.attr.add("no_retiming")
-        si5324_clkout = self.platform.request("si5324_clkout")
-        si5324_clkout_buf = Signal()
+        self.disable_cdr_clk_ibuf = Signal(reset=1)
+        self.disable_cdr_clk_ibuf.attr.add("no_retiming")
+        if self.platform.hw_rev == "v2.0":
+            cdr_clk_clean = self.platform.request("cdr_clk_clean")
+        else:
+            cdr_clk_clean = self.platform.request("si5324_clkout")
+        cdr_clk_clean_buf = Signal()
         self.specials += Instance("IBUFDS_GTE2",
-            i_CEB=self.disable_si5324_ibuf,
-            i_I=si5324_clkout.p, i_IB=si5324_clkout.n,
-            o_O=si5324_clkout_buf)
+            i_CEB=self.disable_cdr_clk_ibuf,
+            i_I=cdr_clk_clean.p, i_IB=cdr_clk_clean.n,
+            o_O=cdr_clk_clean_buf)
         # Note precisely the rules Xilinx made up:
         # refclksel=0b001 GTREFCLK0 selected
         # refclksel=0b010 GTREFCLK1 selected
@@ -429,7 +441,7 @@ class MasterBase(MiniSoC, AMPSoC):
             fbdiv=4,
             fbdiv_45=5,
             refclk_div=1)
-        qpll = QPLL(si5324_clkout_buf, qpll_drtio_settings,
+        qpll = QPLL(cdr_clk_clean_buf, qpll_drtio_settings,
                     self.crg.clk125_buf, qpll_eth_settings)
         self.submodules += qpll
         self.drtio_qpll_channel, self.ethphy_qpll_channel = qpll.channels
@@ -441,7 +453,7 @@ class SatelliteBase(BaseSoC):
     }
     mem_map.update(BaseSoC.mem_map)
 
-    def __init__(self, rtio_clk_freq=125e6, enable_sata=False, **kwargs):
+    def __init__(self, rtio_clk_freq=125e6, enable_sata=False, *, with_wrpll=False, **kwargs):
         BaseSoC.__init__(self,
                  cpu_type="or1k",
                  sdram_controller_type="minicon",
@@ -451,44 +463,54 @@ class SatelliteBase(BaseSoC):
 
         platform = self.platform
 
-        disable_si5324_ibuf = Signal(reset=1)
-        disable_si5324_ibuf.attr.add("no_retiming")
-        si5324_clkout = platform.request("si5324_clkout")
-        si5324_clkout_buf = Signal()
+        disable_cdr_clk_ibuf = Signal(reset=1)
+        disable_cdr_clk_ibuf.attr.add("no_retiming")
+        if self.platform.hw_rev == "v2.0":
+            cdr_clk_clean = self.platform.request("cdr_clk_clean")
+        else:
+            cdr_clk_clean = self.platform.request("si5324_clkout")
+        cdr_clk_clean_buf = Signal()
         self.specials += Instance("IBUFDS_GTE2",
-            i_CEB=disable_si5324_ibuf,
-            i_I=si5324_clkout.p, i_IB=si5324_clkout.n,
-            o_O=si5324_clkout_buf)
+            i_CEB=disable_cdr_clk_ibuf,
+            i_I=cdr_clk_clean.p, i_IB=cdr_clk_clean.n,
+            o_O=cdr_clk_clean_buf)
         qpll_drtio_settings = QPLLSettings(
             refclksel=0b001,
             fbdiv=4,
             fbdiv_45=5,
             refclk_div=1)
-        qpll = QPLL(si5324_clkout_buf, qpll_drtio_settings)
+        qpll = QPLL(cdr_clk_clean_buf, qpll_drtio_settings)
         self.submodules += qpll
 
         drtio_data_pads = []
         if enable_sata:
             drtio_data_pads.append(platform.request("sata"))
         drtio_data_pads += [platform.request("sfp", i) for i in range(3)]
+        if self.platform.hw_rev == "v2.0":
+            drtio_data_pads.append(platform.request("sfp", 3))
 
-        sfp_ctls = [platform.request("sfp_ctl", i) for i in range(3)]
-        self.comb += [sc.tx_disable.eq(0) for sc in sfp_ctls]
+        if self.platform.hw_rev in ("v1.0", "v1.1"):
+            sfp_ctls = [platform.request("sfp_ctl", i) for i in range(3)]
+            self.comb += [sc.tx_disable.eq(0) for sc in sfp_ctls]
         self.submodules.drtio_transceiver = gtp_7series.GTP(
             qpll_channel=qpll.channels[0],
             data_pads=drtio_data_pads,
             sys_clk_freq=self.clk_freq,
             rtio_clk_freq=rtio_clk_freq)
         self.csr_devices.append("drtio_transceiver")
-        self.sync += disable_si5324_ibuf.eq(
+        self.sync += disable_cdr_clk_ibuf.eq(
             ~self.drtio_transceiver.stable_clkin.storage)
 
         if enable_sata:
             sfp_channels = self.drtio_transceiver.channels[1:]
         else:
             sfp_channels = self.drtio_transceiver.channels
-        self.comb += [sfp_ctl.led.eq(channel.rx_ready)
-            for sfp_ctl, channel in zip(sfp_ctls, sfp_channels)]
+        if self.platform.hw_rev in ("v1.0", "v1.1"):
+            self.comb += [sfp_ctl.led.eq(channel.rx_ready)
+                for sfp_ctl, channel in zip(sfp_ctls, sfp_channels)]
+        if self.platform.hw_rev == "v2.0":
+            self.comb += [self.virtual_leds.get(i).eq(channel.rx_ready)
+                          for i, channel in enumerate(sfp_channels)]
 
         self.submodules.rtio_tsc = rtio.TSC("sync", glbl_fine_ts_width=3)
 
@@ -535,23 +557,38 @@ class SatelliteBase(BaseSoC):
         self.add_memory_group("drtioaux_mem", drtioaux_memory_group)
         self.add_csr_group("drtiorep", drtiorep_csr_group)
 
-        self.config["RTIO_FREQUENCY"] = str(rtio_clk_freq/1e6)
-        self.submodules.siphaser = SiPhaser7Series(
-            si5324_clkin=platform.request("si5324_clkin"),
-            rx_synchronizer=self.rx_synchronizer,
-            ref_clk=self.crg.clk125_div2, ref_div2=True,
-            rtio_clk_freq=rtio_clk_freq)
-        platform.add_false_path_constraints(
-            self.crg.cd_sys.clk, self.siphaser.mmcm_freerun_output)
-        self.csr_devices.append("siphaser")
         i2c = self.platform.request("i2c")
         self.submodules.i2c = gpio.GPIOTristate([i2c.scl, i2c.sda])
         self.csr_devices.append("i2c")
         self.config["I2C_BUS_COUNT"] = 1
-        self.config["HAS_SI5324"] = None
-        self.config["SI5324_SOFT_RESET"] = None
 
         rtio_clk_period = 1e9/rtio_clk_freq
+        self.config["RTIO_FREQUENCY"] = str(rtio_clk_freq/1e6)
+        if with_wrpll:
+            self.submodules.wrpll_sampler = DDMTDSamplerGTP(
+                self.drtio_transceiver,
+                platform.request("cdr_clk_clean_fabric"))
+            self.submodules.wrpll = WRPLL(
+                helper_clk_pads=platform.request("ddmtd_helper_clk"),
+                main_dcxo_i2c=platform.request("ddmtd_main_dcxo_i2c"),
+                helper_dxco_i2c=platform.request("ddmtd_helper_dcxo_i2c"),
+                ddmtd_inputs=self.wrpll_sampler)
+            self.csr_devices.append("wrpll")
+            platform.add_period_constraint(self.wrpll.cd_helper.clk, rtio_clk_period*0.99)
+            platform.add_false_path_constraints(self.crg.cd_sys.clk, self.wrpll.cd_helper.clk)
+        else:
+            self.submodules.siphaser = SiPhaser7Series(
+                si5324_clkin=platform.request("cdr_clk") if platform.hw_rev == "v2.0"
+                    else platform.request("si5324_clkin"),
+                rx_synchronizer=self.rx_synchronizer,
+                ref_clk=self.crg.clk125_div2, ref_div2=True,
+                rtio_clk_freq=rtio_clk_freq)
+            platform.add_false_path_constraints(
+                self.crg.cd_sys.clk, self.siphaser.mmcm_freerun_output)
+            self.csr_devices.append("siphaser")
+            self.config["HAS_SI5324"] = None
+            self.config["SI5324_SOFT_RESET"] = None
+
         gtp = self.drtio_transceiver.gtps[0]
         platform.add_period_constraint(gtp.txoutclk, rtio_clk_period)
         platform.add_period_constraint(gtp.rxoutclk, rtio_clk_period)
@@ -587,7 +624,7 @@ class SatelliteBase(BaseSoC):
 class Master(MasterBase):
     def __init__(self, hw_rev=None, **kwargs):
         if hw_rev is None:
-            hw_rev = "v1.1"
+            hw_rev = "v2.0"
         MasterBase.__init__(self, hw_rev=hw_rev, **kwargs)
 
         self.rtio_channels = []
@@ -610,7 +647,7 @@ class Master(MasterBase):
 class Satellite(SatelliteBase):
     def __init__(self, hw_rev=None, **kwargs):
         if hw_rev is None:
-            hw_rev = "v1.1"
+            hw_rev = "v2.0"
         SatelliteBase.__init__(self, hw_rev=hw_rev, **kwargs)
 
         self.rtio_channels = []
@@ -636,7 +673,12 @@ def main():
     parser.add_argument("-V", "--variant", default="tester",
                         help="variant: {} (default: %(default)s)".format(
                             "/".join(sorted(VARIANTS.keys()))))
+    parser.add_argument("--with-wrpll", default=False, action="store_true")
     args = parser.parse_args()
+
+    argdict = dict()
+    if args.with_wrpll:
+        argdict["with_wrpll"] = True
 
     variant = args.variant.lower()
     try:
@@ -644,7 +686,7 @@ def main():
     except KeyError:
         raise SystemExit("Invalid variant (-V/--variant)")
 
-    soc = cls(**soc_kasli_argdict(args))
+    soc = cls(**soc_kasli_argdict(args), **argdict)
     build_artiq_soc(soc, builder_argdict(args))
 
 
